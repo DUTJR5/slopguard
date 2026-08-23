@@ -1,0 +1,32 @@
+{
+  "name": "slopguard",
+  "version": "0.1.0",
+  "description": "Catch hallucinated and typosquatted package names in AI-generated code before they reach your lockfile. CLI + GitHub Action for npm and PyPI.",
+  "type": "module",
+  "bin": {
+    "slopguard": "bin/slopguard.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "DUTJR5 <dutjasonr.cn.5@gmail.com>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DUTJR5/slopguard"
+  },
+  "keywords": [
+    "security",
+    "supply-chain",
+    "dependencies",
+    "npm",
+    "pypi",
+    "cli",
+    "ai-generated-code",
+    "slopsquatting",
+    "typosquatting"
+  ]
+}
