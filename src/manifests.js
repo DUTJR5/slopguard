@@ -3,9 +3,9 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '__pycache__', '.venv', 'venv']);
+export const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '__pycache__', '.venv', 'venv']);
 
-async function walk(dir, depth = 0, maxDepth = 4) {
+export async function walk(dir, depth = 0, maxDepth = 4) {
   if (depth > maxDepth) return [];
   let entries;
   try {
