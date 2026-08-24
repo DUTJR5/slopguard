@@ -1,0 +1,87 @@
+name: 'slopguard'
+description: 'Scan a project for hallucinated and typosquatted package dependencies (npm / PyPI).'
+author: 'DUTJR5'
+branding:
+  icon: shield
+  color: blue
+inputs:
+  path:
+    description: 'Directory to scan, relative to the repository root.'
+    required: false
+    default: '.'
+  fail-on-findings:
+    description: 'If true, fail the action when suspicious packages are found.'
+    required: false
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Scan dependencies
+      id: scan
+      shell: bash
+      run: |
+        set +e
+        node "${{ github.action_path }}/bin/slopguard.js" scan "${{ inputs.path }}" --json > "$RUNNER_TEMP/slopguard.json"
+        SCAN_EXIT=$?
+        set -e
+        echo "exit=${SCAN_EXIT}" >> "${GITHUB_OUTPUT}"
+        echo "slopguard scan exited with code ${SCAN_EXIT}"
+
+    - name: Post results as PR comment
+      if: ${{ github.event_name == 'pull_request' }}
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const reportPath = path.join(process.env.RUNNER_TEMP, 'slopguard.json');
+          let report;
+          try {
+            report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+          } catch (err) {
+            core.warning('slopguard: could not read scan report (' + err.message + ')');
+            return;
+          }
+          const suspicious = report.suspicious || [];
+          const warnings = report.warnings || [];
+          const undeclared = report.undeclaredImports || [];
+          if (suspicious.length === 0 && warnings.length === 0 && undeclared.length === 0) {
+            return;
+          }
+          const lines = [];
+          lines.push('## 🛡️ slopguard scan results');
+          lines.push('');
+          lines.push('The following issues were found in this pull request:');
+          lines.push('');
+          for (const s of suspicious) {
+            lines.push('- ❌ **NOT FOUND** `' + s.name + '` (' + s.ecosystem + ') — ' + s.issue);
+          }
+          for (const w of warnings) {
+            lines.push('- ⚠️ **TYPOSQUAT** `' + w.name + '` (' + w.ecosystem + ') — resembles `' + w.similarTo + '` (distance ' + w.distance + ')');
+          }
+          for (const u of undeclared) {
+            lines.push('- 📦 **UNDECLARED** `' + u.name + '` (' + u.ecosystem + ') — imported in `' + u.file + '` but not in any manifest');
+          }
+          lines.push('');
+          lines.push('_Run `slopguard scan .` locally for the full report._');
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: lines.join('\n'),
+          });
+
+    - name: Enforce fail-on-findings
+      if: ${{ inputs.fail-on-findings == 'true' }}
+      shell: bash
+      run: |
+        if [ "${{ steps.scan.outputs.exit }}" != "0" ]; then
+          echo "slopguard: suspicious packages were found and fail-on-findings is true; failing the action."
+          exit 1
+        fi
+        echo "slopguard: no blocking findings."
