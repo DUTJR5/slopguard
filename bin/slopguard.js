@@ -4,6 +4,7 @@ import path from 'node:path';
 import { collectDependencies } from '../src/manifests.js';
 import { collectImports } from '../src/imports.js';
 import { checkPackages } from '../src/registry.js';
+import { findTyposquats } from '../src/typosquat.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -26,6 +27,11 @@ Exit codes:
   0  all declared packages exist in their registry
   1  one or more packages were NOT found (possible hallucination / typosquat)
   2  usage error or scan failure
+
+Output:
+  For packages that exist but resemble a well-known name (typosquat), a
+  WARNING line is printed: "WARNING [ecosystem] name -> similar to famous".
+  With --json these appear in the "warnings" array.
 `;
 
 function parseFlags(rest) {
@@ -70,6 +76,17 @@ async function runScan(flags) {
   const missing = results.filter((r) => r.exists === false);
   const unknown = results.filter((r) => r.exists === null);
 
+  // A real package can still be a typosquat: a name one or two edits away from a
+  // famous package (e.g. "reactt" vs "react"). Flag those that actually exist.
+  const warnings = [];
+  for (const r of results) {
+    if (r.exists !== true) continue;
+    const matches = await findTyposquats(r.name, r.ecosystem);
+    for (const m of matches) {
+      warnings.push({ name: r.name, ecosystem: r.ecosystem, similarTo: m.name, distance: m.distance });
+    }
+  }
+
   // Imports that are not declared in any manifest are a classic AI-slop signal.
   const manifestNames = new Set(packages.map((p) => p.name.toLowerCase()));
   const seenUndeclared = new Set();
@@ -91,6 +108,12 @@ async function runScan(flags) {
           checked: results.length,
           suspicious: missing.map((r) => ({ name: r.name, ecosystem: r.ecosystem, issue: 'not-found-in-registry' })),
           uncertain: unknown.map((r) => ({ name: r.name, ecosystem: r.ecosystem, reason: r.reason })),
+          warnings: warnings.map((w) => ({
+            name: w.name,
+            ecosystem: w.ecosystem,
+            similarTo: w.similarTo,
+            distance: w.distance,
+          })),
           undeclaredImports: undeclared.map((imp) => ({
             name: imp.name,
             ecosystem: imp.ecosystem,
@@ -114,6 +137,9 @@ async function runScan(flags) {
     const rel = path.relative(root, imp.file);
     console.log(`UNDECLARED  [${imp.ecosystem}] ${imp.name}  <- imported in ${rel} but not declared in any manifest`);
   }
+  for (const w of warnings) {
+    console.log(`WARNING    [${w.ecosystem}] ${w.name}  -> similar to ${w.similarTo} (distance ${w.distance})`);
+  }
 
   if (!flags.quiet) {
     if (missing.length === 0 && undeclared.length === 0) {
@@ -125,6 +151,11 @@ async function runScan(flags) {
       if (undeclared.length > 0) {
         console.log(
           `${undeclared.length} imported package(s) are not declared in any manifest. AI-generated code often imports packages that were never added to a manifest.`,
+        );
+      }
+      if (warnings.length > 0) {
+        console.log(
+          `${warnings.length} declared package(s) look like a typo of a well-known package. Review the WARNING lines above before installing.`,
         );
       }
     }
