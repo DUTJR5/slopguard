@@ -41,6 +41,19 @@ function depsFromPackageJson(jsonText) {
   return names;
 }
 
+// Gemfile: each `gem 'name'` / `gem "name"` line declares a dependency. Lines
+// inside groups / source blocks still contain the bare `gem 'name'` token, and
+// comment lines start with `#` so they are skipped by the leading `^\s*gem`.
+export function depsFromGemfile(text) {
+  const names = [];
+  const re = /^\s*gem\s+['"]([^'"]+)['"]/;
+  for (const line of text.split('\n')) {
+    const m = re.exec(line);
+    if (m) names.push(m[1]);
+  }
+  return names;
+}
+
 function depsFromRequirements(text) {
   const names = [];
   for (const rawLine of text.split('\n')) {
@@ -83,6 +96,9 @@ export async function collectDependencies(root) {
     } else if (base === 'requirements.txt' || /^requirements-.*\.txt$/.test(base)) {
       manifests.push(file);
       for (const name of depsFromRequirements(await readFile(file, 'utf8'))) add(name, 'pypi');
+    } else if (base === 'Gemfile') {
+      manifests.push(file);
+      for (const name of depsFromGemfile(await readFile(file, 'utf8'))) add(name, 'rubygems');
     }
   }
 

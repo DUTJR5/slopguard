@@ -2,9 +2,11 @@
 
 import path from 'node:path';
 import { collectDependencies } from '../src/manifests.js';
+import { collectLockedPackages } from '../src/lockfiles.js';
 import { collectImports } from '../src/imports.js';
 import { checkPackages } from '../src/registry.js';
 import { findTyposquats } from '../src/typosquat.js';
+import { toSarif } from '../src/sarif.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -12,13 +14,13 @@ const command = args[0];
 const HELP = `slopguard - catch hallucinated and typosquatted dependencies
 
 Usage:
-  slopguard scan [path] [--json] [--quiet] [--no-imports]
+  slopguard scan [path] [--format text|json|sarif] [--quiet] [--no-imports]
 
 Commands:
-  scan [path]   Scan manifests and source imports under [path] (default: current directory)
+  scan [path]   Scan manifests, lockfiles and source imports under [path] (default: current directory)
 
 Options:
-  --json        Print results as JSON
+  --format      Output format: text (default), json, or sarif (SARIF 2.1.0)
   --quiet       Only print suspicious packages
   --no-imports  Skip source-import scanning; only check manifest dependencies
   --help        Show this help
@@ -31,13 +33,25 @@ Exit codes:
 Output:
   For packages that exist but resemble a well-known name (typosquat), a
   WARNING line is printed: "WARNING [ecosystem] name -> similar to famous".
-  With --json these appear in the "warnings" array.
+  With --json or --format sarif these appear in the "warnings" array.
 `;
 
 function parseFlags(rest) {
+  const formatIdx = rest.indexOf('--format');
+  let format = 'text';
+  if (formatIdx !== -1 && rest[formatIdx + 1]) {
+    const v = rest[formatIdx + 1];
+    if (['text', 'json', 'sarif'].includes(v)) {
+      format = v;
+    } else {
+      console.error(`slopguard: unknown --format "${v}"; expected text, json or sarif`);
+      process.exit(2);
+    }
+  }
   return {
-    path: rest.find((a) => !a.startsWith('--')) || '.',
-    json: rest.includes('--json'),
+    path: rest.find((a) => !a.startsWith('--') && a !== 'json' && a !== 'sarif' && a !== 'text') || '.',
+    json: rest.includes('--json') || format === 'json',
+    format,
     quiet: rest.includes('--quiet'),
     noImports: rest.includes('--no-imports'),
   };
@@ -46,6 +60,14 @@ function parseFlags(rest) {
 async function runScan(flags) {
   const root = path.resolve(flags.path);
   const { packages, manifests } = await collectDependencies(root);
+  const { packages: locked, lockfiles } = await collectLockedPackages(root);
+
+  // Merge locked packages into the declared set, de-duplicating by ecosystem+name.
+  const merged = new Map();
+  for (const p of [...packages, ...locked]) {
+    merged.set(`${p.ecosystem}:${p.name.toLowerCase()}`, p);
+  }
+  const allPackages = [...merged.values()];
 
   let imports = [];
   if (!flags.noImports) {
@@ -53,8 +75,8 @@ async function runScan(flags) {
     imports = found.imports;
   }
 
-  if (packages.length === 0 && imports.length === 0) {
-    const msg = `No dependency manifests or source imports found under ${root}`;
+  if (allPackages.length === 0 && imports.length === 0) {
+    const msg = `No dependency manifests, lockfiles or source imports found under ${root}`;
     if (flags.json) {
       console.log(
         JSON.stringify({ root, manifests: [], packages: [], suspicious: [], undeclaredImports: [] }, null, 2),
@@ -65,13 +87,13 @@ async function runScan(flags) {
     return 0;
   }
 
-  if (!flags.quiet && !flags.json) {
-    const bits = [`${manifests.length} manifest(s), ${packages.length} declared package(s)`];
+  if (!flags.quiet && !flags.json && flags.format !== 'sarif') {
+    const bits = [`${manifests.length} manifest(s), ${allPackages.length} declared package(s) from ${lockfiles.length + manifests.length} file(s)`];
     if (!flags.noImports) bits.push(`${imports.length} source import(s)`);
     console.log(`Scanning ${bits.join(', ')} under ${root}...`);
   }
 
-  const results = await checkPackages(packages);
+  const results = await checkPackages(allPackages);
 
   const missing = results.filter((r) => r.exists === false);
   const unknown = results.filter((r) => r.exists === null);
@@ -88,7 +110,7 @@ async function runScan(flags) {
   }
 
   // Imports that are not declared in any manifest are a classic AI-slop signal.
-  const manifestNames = new Set(packages.map((p) => p.name.toLowerCase()));
+  const manifestNames = new Set(allPackages.map((p) => p.name.toLowerCase()));
   const seenUndeclared = new Set();
   const undeclared = [];
   for (const imp of imports) {
@@ -99,12 +121,18 @@ async function runScan(flags) {
     undeclared.push(imp);
   }
 
+  if (flags.format === 'sarif') {
+    console.log(JSON.stringify(toSarif(results, warnings), null, 2));
+    return missing.length > 0 ? 1 : 0;
+  }
+
   if (flags.json) {
     console.log(
       JSON.stringify(
         {
           root,
           manifests,
+          lockfiles,
           checked: results.length,
           suspicious: missing.map((r) => ({ name: r.name, ecosystem: r.ecosystem, issue: 'not-found-in-registry' })),
           uncertain: unknown.map((r) => ({ name: r.name, ecosystem: r.ecosystem, reason: r.reason })),

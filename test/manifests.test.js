@@ -54,3 +54,27 @@ test('collectDependencies ignores node_modules and dedupes', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('collectDependencies parses Gemfile (rubygems)', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'slopguard-'));
+  try {
+    await writeFile(
+      path.join(dir, 'Gemfile'),
+      [
+        "source 'https://rubygems.org'",
+        "gem 'rails'",
+        "# a comment",
+        "gem \"pg\"",
+        "gem 'rspec', '~> 3.0'",
+        'gemspec',
+      ].join('\n'),
+    );
+    const { packages, manifests } = await collectDependencies(dir);
+    assert.equal(manifests.length, 1);
+    const names = packages.map((p) => p.name).sort();
+    assert.deepEqual(names, ['pg', 'rails', 'rspec']);
+    assert.ok(packages.every((p) => p.ecosystem === 'rubygems'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

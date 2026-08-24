@@ -29,6 +29,9 @@ export function registryUrl(name, ecosystem) {
   if (ecosystem === 'pypi') {
     return `https://pypi.org/pypi/${encodeURIComponent(name)}/json`;
   }
+  if (ecosystem === 'rubygems') {
+    return `https://rubygems.org/api/v1/gems/${encodeURIComponent(name)}.json`;
+  }
   throw new Error(`unsupported ecosystem: ${ecosystem}`);
 }
 
