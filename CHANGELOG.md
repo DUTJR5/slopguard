@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follo
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-25
+
 ### Added
 
 - Config file and private registry support: `slopguard scan` now reads `slopguard.config.json` from the scanned directory. It supports `allowlist` (skip every check for listed package names — for private/internal packages), `ignoreEcosystems` (skip a whole ecosystem, e.g. `["pypi"]`), `offline` (no network requests; only local typosquat checks run and packages are reported as uncertain instead of failed), and `registries` (override the npm/PyPI/RubyGems base URLs). Private npm mirrors use the same `/{name}` path with `%2f` for scoped packages; a private PyPI base ending in `/simple` (PEP 503 index, no JSON API) is probed with a plain `GET {url}/{name}/` and a 200/404 response.
