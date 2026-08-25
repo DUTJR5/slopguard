@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { registryUrl, goModuleEscape, checkPackage } from '../src/registry.js';
 import { createCache } from '../src/cache.js';
 
@@ -138,8 +141,11 @@ test('checkPackage(404) reports exists:false and is cached for reuse', async () 
     calls++;
     return fakeRes(404, '');
   });
+  // Use a throwaway directory: a cache written to the repo root would leak
+  // between test runs and make the second run start pre-warmed.
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'slopguard-test-'));
   try {
-    const cache = createCache(process.cwd(), { enabled: true });
+    const cache = createCache(tmp, { enabled: true });
     const a = await checkPackage('nope-pkg', 'npm', {}, { cache });
     assert.equal(a.exists, false);
     const b = await checkPackage('nope-pkg', 'npm', {}, { cache });
@@ -147,6 +153,7 @@ test('checkPackage(404) reports exists:false and is cached for reuse', async () 
     assert.equal(calls, 1, 'second call should be served from cache, not refetched');
     await cache.save();
   } finally {
+    rmSync(tmp, { recursive: true, force: true });
     restore();
   }
 });
