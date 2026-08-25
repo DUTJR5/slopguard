@@ -23,6 +23,8 @@ export const DEFAULT_REGISTRIES = {
   npm: 'https://registry.npmjs.org',
   pypi: 'https://pypi.org',
   rubygems: 'https://rubygems.org',
+  go: 'https://proxy.golang.org',
+  rust: 'https://crates.io',
 };
 
 /**
@@ -80,7 +82,7 @@ export function isOffline(config) {
  * @returns {string}
  */
 export function getRegistry(config, ecosystem) {
-  const overrides = config.raw.registries;
+  const overrides = config && config.raw && config.raw.registries;
   if (overrides && typeof overrides === 'object' && typeof overrides[ecosystem] === 'string') {
     return overrides[ecosystem].replace(/\/+$/, ''); // trim trailing slash
   }

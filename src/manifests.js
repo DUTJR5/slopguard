@@ -71,8 +71,86 @@ function depsFromRequirements(text) {
 }
 
 /**
+ * Parse the `require` section of a go.mod file.
+ *
+ * Go lists modules (not packages) under `require`. They appear either as a
+ * single `require github.com/foo/bar v1.2.3` line or inside a fenced block:
+ *
+ *   require (
+ *       github.com/gin-gonic/gin v1.9.1
+ *       github.com/stretchr/testify v1.8.4 // indirect
+ *   )
+ *
+ * The module path is the first whitespace-separated token on each require line.
+ * We return those paths; the registry check later confirms they exist.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function parseGoMod(text) {
+  const names = [];
+  let inRequire = false;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('//')) continue;
+    if (!inRequire) {
+      if (/^require\s*\($/.test(line)) {
+        inRequire = true;
+        continue;
+      }
+      const single = /^require\s+(\S+)/.exec(line);
+      if (single) {
+        names.push(single[1]);
+        continue;
+      }
+      continue;
+    }
+    if (line === ')') {
+      inRequire = false;
+      continue;
+    }
+    const tok = line.split(/\s+/)[0];
+    if (tok) names.push(tok);
+  }
+  return names;
+}
+
+/**
+ * Parse dependency names from a Cargo.toml file (line-based, no TOML library).
+ *
+ * We only read the `[dependencies]` and `[dev-dependencies]` sections. A crate
+ * is declared either by a `name = "1.0"` key line, or by a sub-table header
+ * `[dependencies.foo]` / `[dev-dependencies.foo]`. The inner keys of a sub-table
+ * belong to that crate and are NOT separate dependencies, so we skip them.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function parseCargoToml(text) {
+  const names = [];
+  let section = null;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const header = /^\[([^\]]+)\]\s*$/.exec(line);
+    if (header) {
+      section = header[1].trim();
+      // A sub-table like [dependencies.foo] declares the crate "foo" directly.
+      const sub = /^(?:dev-)?dependencies\.([^\s]+)$/.exec(section);
+      if (sub) names.push(sub[1]);
+      continue;
+    }
+    if (section === 'dependencies' || section === 'dev-dependencies') {
+      const m = /^([A-Za-z0-9_-]+)\s*=\s*/.exec(line);
+      if (m) names.push(m[1]);
+    }
+  }
+  return names;
+}
+
+/**
  * Find manifests under `root` and return every declared dependency.
- * @returns {Promise<{packages: Array<{name: string, ecosystem: 'npm'|'pypi'}>, manifests: string[]}>}
+ * @returns {Promise<{packages: Array<{name: string, ecosystem: 'npm'|'pypi'|'rubygems'|'go'|'rust'}>, manifests: string[]}>}
  */
 export async function collectDependencies(root) {
   const files = await walk(root);
@@ -99,6 +177,12 @@ export async function collectDependencies(root) {
     } else if (base === 'Gemfile') {
       manifests.push(file);
       for (const name of depsFromGemfile(await readFile(file, 'utf8'))) add(name, 'rubygems');
+    } else if (base === 'go.mod') {
+      manifests.push(file);
+      for (const name of parseGoMod(await readFile(file, 'utf8'))) add(name, 'go');
+    } else if (base === 'Cargo.toml') {
+      manifests.push(file);
+      for (const name of parseCargoToml(await readFile(file, 'utf8'))) add(name, 'rust');
     }
   }
 

@@ -160,6 +160,50 @@ export function parseGemfileLock(text) {
   return names;
 }
 
+// go.sum: each non-comment line is "<module> <version> <hash>" (or
+// "<module> <version>/go.mod <hash>"). The module path is the first token. A
+// module appears twice (once for the package, once for its go.mod), so we
+// deduplicate by name.
+export function parseGoSum(text) {
+  const seen = new Set();
+  const names = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const tok = line.split(/\s+/)[0];
+    if (tok && !seen.has(tok)) {
+      seen.add(tok);
+      names.push({ name: tok, ecosystem: 'go' });
+    }
+  }
+  return names;
+}
+
+// Cargo.lock: a sequence of [[package]] tables, each with a `name = "..."`.
+export function parseCargoLock(text) {
+  const names = [];
+  let inPackage = false;
+  for (const line of text.split('\n')) {
+    if (/^\[\[package\]\]/.test(line)) {
+      inPackage = true;
+      continue;
+    }
+    // Any other top-level table (e.g. [metadata], [patch.*]) ends the block.
+    if (inPackage && /^\[[^[]/.test(line)) {
+      inPackage = false;
+      continue;
+    }
+    if (inPackage) {
+      const m = /^name\s*=\s*["']([^"']+)["']/.exec(line);
+      if (m) {
+        names.push({ name: m[1], ecosystem: 'rust' });
+        inPackage = false;
+      }
+    }
+  }
+  return names;
+}
+
 /**
  * Find lockfiles under `root` and return every locked package.
  *
@@ -198,6 +242,12 @@ export async function collectLockedPackages(root) {
     } else if (base === 'Gemfile.lock') {
       lockfiles.push(file);
       parsed = parseGemfileLock(await readFile(file, 'utf8'));
+    } else if (base === 'go.sum') {
+      lockfiles.push(file);
+      parsed = parseGoSum(await readFile(file, 'utf8'));
+    } else if (base === 'Cargo.lock') {
+      lockfiles.push(file);
+      parsed = parseCargoLock(await readFile(file, 'utf8'));
     }
     if (parsed) for (const p of parsed) add(p.name, p.ecosystem);
   }

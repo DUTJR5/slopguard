@@ -10,7 +10,7 @@ AI coding assistants sometimes invent dependency names that don't exist. Attacke
 
 ## Status
 
-Actively developed. The CLI scans npm, PyPI and RubyGems manifests, lockfiles and source imports, detects typosquats, supports a config file and baseline, emits SARIF, and ships as a GitHub Action (see [Use as a GitHub Action](#use-as-a-github-action)). Go and Rust support are on the [roadmap](#roadmap).
+Actively developed. The CLI scans npm, PyPI, RubyGems, Go and Rust manifests, lockfiles and source imports, detects typosquats, scores existing packages by risk, supports a config file and baseline, emits SARIF, and ships as a GitHub Action (see [Use as a GitHub Action](#use-as-a-github-action)).
 
 ## Install
 
@@ -49,6 +49,7 @@ All options:
 | `--config <file>` | Path to a config file (default: `<path>/slopguard.config.json`). |
 | `--write-baseline` | Write the current findings to `slopguard-baseline.json` and exit `0`. |
 | `--baseline` | Suppress findings already listed in `slopguard-baseline.json` (and from the exit code). |
+| `--no-cache` | Do not read or write the on-disk response cache (`.slopguard-cache.json`). |
 | `--help`, `-h` | Show the help text. |
 
 Example output:
@@ -97,12 +98,16 @@ For every name it finds, slopguard asks the real registry whether the package ex
 - npm: `package.json` — all four dependency fields (`dependencies`, `devDependencies`, `optionalDependencies`, `peerDependencies`).
 - PyPI: `requirements.txt` and `requirements-*.txt`.
 - RubyGems: `Gemfile` (`gem 'name'` lines).
+- Go: `go.mod` — module paths in `require` blocks (checked against the Go module proxy; uppercase letters are escaped per Go's convention, e.g. `github.com/Shopify/go-que` → `github.com/!shopify/go-que`).
+- Rust: `Cargo.toml` — keys in `[dependencies]` / `[dev-dependencies]` (checked against the crates.io API).
 
 **Lockfiles** (folded into the scan, de-duplicated with manifests)
 
 - npm: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`.
 - PyPI: `poetry.lock`.
 - RubyGems: `Gemfile.lock`.
+- Go: `go.sum`.
+- Rust: `Cargo.lock`.
 
 **Source imports**
 
@@ -115,6 +120,17 @@ Packages that are imported but never declared in any manifest are flagged as `UN
 
 For every package that exists in its registry, the name is compared against a built-in list of the most popular npm, PyPI and RubyGems packages using the Levenshtein edit distance. A name one or two edits away from a famous package prints a `WARNING`. Short names (< 5 chars) are only flagged at distance 1 to keep false positives down.
 
+**Risk scoring**
+
+"Exists" is only the first question. Every package that *does* exist is still graded so a real but freshly-created, barely-downloaded, look-alike package stands out. Signals:
+
+- package registered **< 30 days ago** → +2
+- (npm only) **weekly downloads < 100** → +1 — PyPI has no public download-count API, so this signal is npm-only
+- name resembles a well-known package (typosquat) → +2
+- imported in source but never declared in a manifest → +1
+
+Total **≥ 3** is printed as `HIGH RISK`. Risk findings are reported but do not change the exit code (only missing packages fail CI). Risk metadata is reused from the response cache, so it costs no extra network requests.
+
 ## Roadmap
 
 - [x] npm / PyPI existence checks
@@ -125,8 +141,9 @@ For every package that exists in its registry, the name is compared against a bu
 - [x] SARIF output for GitHub code scanning
 - [x] RubyGems support
 - [x] Config file, allowlist, baseline, private registry support
-- [ ] Go and Rust support
-- [ ] Risk scoring from registry metadata (package age, download volume, maintainer count)
+- [x] Go and Rust support (`go.mod` / `go.sum`, `Cargo.toml` / `Cargo.lock`)
+- [x] Risk scoring from registry metadata (package age, download volume, typosquat resemblance, undeclared imports)
+- [x] Response cache (`.slopguard-cache.json`, 24h TTL) to skip repeat registry requests
 
 ## Contributing
 

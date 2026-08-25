@@ -10,6 +10,8 @@ import {
   parsePnpmLock,
   parsePoetryLock,
   parseGemfileLock,
+  parseGoSum,
+  parseCargoLock,
 } from '../src/lockfiles.js';
 
 const names = (arr) => arr.map((p) => `${p.ecosystem}:${p.name}`).sort();
@@ -139,6 +141,55 @@ test('collectLockedPackages ignores node_modules', async () => {
     );
     const { packages } = await collectLockedPackages(dir);
     assert.deepEqual(packages, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('parseGoSum extracts module paths (go ecosystem)', () => {
+  const text = [
+    '# comment line',
+    'github.com/gin-gonic/gin v1.9.1 h1:abc=',
+    'github.com/gin-gonic/gin v1.9.1/go.mod h1:def=',
+    'github.com/spf13/cobra v1.7.0 h1:ghi=',
+  ].join('\n');
+  assert.deepEqual(
+    parseGoSum(text).map((p) => `${p.ecosystem}:${p.name}`),
+    ['go:github.com/gin-gonic/gin', 'go:github.com/spf13/cobra'],
+  );
+});
+
+test('parseCargoLock extracts [[package]] names (rust ecosystem)', () => {
+  const text = [
+    '[[package]]',
+    'name = "serde"',
+    'version = "1.0.0"',
+    'source = "registry+https://github.com/rust-lang/crates.io-index"',
+    '',
+    '[[package]]',
+    'name = "tokio"',
+    'version = "1.0.0"',
+    '',
+    '[metadata]',
+    'name = "not-a-package"',
+  ].join('\n');
+  assert.deepEqual(
+    parseCargoLock(text).map((p) => `${p.ecosystem}:${p.name}`),
+    ['rust:serde', 'rust:tokio'],
+  );
+});
+
+test('collectLockedPackages reads go.sum and Cargo.lock', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'slopguard-lock-'));
+  try {
+    await writeFile(path.join(dir, 'go.sum'), 'github.com/x/y v1.0.0 h1:z=\n');
+    await writeFile(
+      path.join(dir, 'Cargo.lock'),
+      ['[[package]]', 'name = "serde"', 'version = "1.0.0"', '', '[[package]]', 'name = "tokio"', 'version = "1.0.0"'].join('\n'),
+    );
+    const { packages } = await collectLockedPackages(dir);
+    const got = packages.map((p) => `${p.ecosystem}:${p.name}`).sort();
+    assert.deepEqual(got, ['go:github.com/x/y', 'rust:serde', 'rust:tokio']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

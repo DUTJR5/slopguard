@@ -6,6 +6,8 @@ import { collectLockedPackages } from '../src/lockfiles.js';
 import { collectImports } from '../src/imports.js';
 import { checkPackages } from '../src/registry.js';
 import { findTyposquats } from '../src/typosquat.js';
+import { computeRisk } from '../src/risk.js';
+import { createCache } from '../src/cache.js';
 import { toSarif } from '../src/sarif.js';
 import { loadConfig, isAllowlisted, isEcosystemIgnored, isOffline } from '../src/config.js';
 import { writeBaseline, loadBaseline, applyBaseline } from '../src/baseline.js';
@@ -30,7 +32,12 @@ Options:
                         detection still works). Packages are reported as uncertain, not failed.
   --write-baseline      Write the current findings to slopguard-baseline.json and exit 0
   --baseline            Suppress findings already listed in slopguard-baseline.json
+  --no-cache            Do not read or write the on-disk response cache (.slopguard-cache.json)
   --help                Show this help
+
+Supported ecosystems: npm, PyPI, RubyGems, Go (go.mod / go.sum) and Rust (Cargo.toml / Cargo.lock).
+Risk scoring: packages that exist are still scored on age, download volume, typosquat resemblance and
+undeclared imports; total >= 3 marks a HIGH RISK package.
 
 Config file (slopguard.config.json):
   allowlist:        string[]  - package names to skip entirely (private/internal packages)
@@ -77,6 +84,7 @@ function parseFlags(rest) {
     configPath,
     writeBaseline: rest.includes('--write-baseline'),
     baseline: rest.includes('--baseline'),
+    noCache: rest.includes('--no-cache'),
   };
 }
 
@@ -87,6 +95,11 @@ async function runScan(flags) {
 
   const { packages, manifests } = await collectDependencies(root);
   const { packages: locked, lockfiles } = await collectLockedPackages(root);
+
+  // Response cache: reuses yesterday's existence verdicts and registry metadata
+  // so re-running a scan does not hammer the registries again. `--no-cache`
+  // disables it entirely.
+  const cache = createCache(root, { enabled: !flags.noCache });
 
   // Merge locked packages into the declared set, de-duplicating by ecosystem+name.
   const merged = new Map();
@@ -134,7 +147,10 @@ async function runScan(flags) {
     console.log(`Scanning ${bits.join(', ')} under ${root}...`);
   }
 
-  const results = await checkPackages(allPackages, config, offline);
+  const results = await checkPackages(allPackages, config, { offline, cache });
+
+  // Persist any fresh verdicts we just fetched, so the next run can reuse them.
+  await cache.save();
 
   const missing = results.filter((r) => r.exists === false);
   const unknown = results.filter((r) => r.exists === null);
@@ -161,6 +177,28 @@ async function runScan(flags) {
     seenUndeclared.add(key);
     undeclared.push(imp);
   }
+
+  // Risk scoring: every package that actually exists in its registry is still
+  // worth grading. We combine registry metadata (age, downloads) with the local
+  // signals (typosquat resemblance, imported-but-undeclared). Results carry a
+  // `risk` object; packages scoring >= 1 are reported, >= 3 are HIGH RISK.
+  const typoSet = new Set(warnings.map((w) => `${w.ecosystem}:${w.name.toLowerCase()}`));
+  const undSet = new Set(undeclared.map((imp) => `${imp.ecosystem}:${imp.name.toLowerCase()}`));
+  const risky = [];
+  for (const r of results) {
+    if (r.exists !== true) continue;
+    const key = `${r.ecosystem}:${r.name.toLowerCase()}`;
+    const risk = computeRisk({
+      name: r.name,
+      ecosystem: r.ecosystem,
+      metadata: r.metadata || null,
+      typosquatHit: typoSet.has(key),
+      undeclared: undSet.has(key),
+    });
+    r.risk = risk;
+    if (risk.score >= 1) risky.push({ name: r.name, ecosystem: r.ecosystem, ...risk });
+  }
+  risky.sort((a, b) => b.score - a.score);
 
   // Baseline: suppress findings we already acknowledged. `--write-baseline`
   // writes the current set and exits cleanly; `--baseline` filters the rest.
@@ -202,6 +240,18 @@ async function runScan(flags) {
             ecosystem: imp.ecosystem,
             file: path.relative(root, imp.file),
           })),
+          risk: risky.map((r) => ({
+            name: r.name,
+            ecosystem: r.ecosystem,
+            score: r.score,
+            level: r.level,
+            signals: r.signals,
+          })),
+          cache: {
+            enabled: cache.enabled,
+            hits: cache.stats.hits,
+            fetches: cache.stats.fetches,
+          },
         },
         null,
         2,
@@ -223,6 +273,10 @@ async function runScan(flags) {
   for (const w of warnOut) {
     console.log(`WARNING    [${w.ecosystem}] ${w.name}  -> similar to ${w.similarTo} (distance ${w.distance})`);
   }
+  for (const rk of risky) {
+    const tag = rk.level === 'HIGH RISK' ? 'HIGH RISK' : 'RISK';
+    console.log(`${tag}     [${rk.ecosystem}] ${rk.name}  (score ${rk.score})  signals: ${rk.signals.join('; ')}`);
+  }
 
   if (!flags.quiet) {
     const totalKnown = missing.length - missOut.length;
@@ -241,6 +295,12 @@ async function runScan(flags) {
       if (warnOut.length > 0) {
         console.log(
           `${warnOut.length} declared package(s) look like a typo of a well-known package. Review the WARNING lines above before installing.`,
+        );
+      }
+      if (risky.length > 0) {
+        const high = risky.filter((r) => r.level === 'HIGH RISK').length;
+        console.log(
+          `${risky.length} declared package(s) flagged by risk scoring (${high} HIGH RISK). Review the RISK lines above before installing.`,
         );
       }
       if (baseline && totalKnown) {
