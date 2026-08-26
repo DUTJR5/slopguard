@@ -9,6 +9,8 @@ import { findTyposquats } from '../src/typosquat.js';
 import { computeRisk } from '../src/risk.js';
 import { createCache } from '../src/cache.js';
 import { toSarif } from '../src/sarif.js';
+import { toHtmlReport } from '../src/report-html.js';
+import { writeFile } from 'node:fs/promises';
 import { loadConfig, isAllowlisted, isEcosystemIgnored, isOffline } from '../src/config.js';
 import { writeBaseline, loadBaseline, applyBaseline } from '../src/baseline.js';
 
@@ -24,7 +26,7 @@ Commands:
   scan [path]   Scan manifests, lockfiles and source imports under [path] (default: current directory)
 
 Options:
-  --format <fmt>        Output format: text (default), json, or sarif (SARIF 2.1.0)
+  --format <fmt>        Output format: text (default), json, sarif (SARIF 2.1.0), or html (self-contained report file)
   --quiet               Only print suspicious packages
   --no-imports          Skip source-import scanning; only check manifest dependencies
   --config <file>       Path to a slopguard config file (default: <path>/slopguard.config.json)
@@ -64,10 +66,10 @@ function parseFlags(rest) {
   let format = 'text';
   if (formatIdx !== -1 && rest[formatIdx + 1]) {
     const v = rest[formatIdx + 1];
-    if (['text', 'json', 'sarif'].includes(v)) {
+    if (['text', 'json', 'sarif', 'html'].includes(v)) {
       format = v;
     } else {
-      console.error(`slopguard: unknown --format "${v}"; expected text, json or sarif`);
+      console.error(`slopguard: unknown --format "${v}"; expected text, json, sarif or html`);
       process.exit(2);
     }
   }
@@ -75,7 +77,7 @@ function parseFlags(rest) {
   const configPath = configIdx !== -1 && rest[configIdx + 1] ? rest[configIdx + 1] : null;
 
   return {
-    path: rest.find((a) => !a.startsWith('--') && a !== 'json' && a !== 'sarif' && a !== 'text') || '.',
+    path: rest.find((a) => !a.startsWith('--') && a !== 'json' && a !== 'sarif' && a !== 'text' && a !== 'html') || '.',
     json: rest.includes('--json') || format === 'json',
     format,
     quiet: rest.includes('--quiet'),
@@ -213,6 +215,26 @@ async function runScan(flags) {
   const missOut = filtered.missing;
   const warnOut = filtered.warnings;
   const undOut = filtered.undeclared;
+
+  if (flags.format === 'html') {
+    const html = toHtmlReport({
+      root,
+      manifests,
+      lockfiles,
+      results,
+      missing: missOut,
+      uncertain: unknown,
+      warnings: warnOut,
+      undeclared: undOut,
+      risky,
+      cache: { enabled: cache.enabled, hits: cache.stats.hits, fetches: cache.stats.fetches },
+      generatedAt: new Date(),
+    });
+    const outPath = path.join(root, 'slopguard-report.html');
+    await writeFile(outPath, html, 'utf8');
+    console.log(`Wrote HTML report to ${outPath}`);
+    return missOut.length > 0 ? 1 : 0;
+  }
 
   if (flags.format === 'sarif') {
     console.log(JSON.stringify(toSarif(missOut, warnOut), null, 2));
