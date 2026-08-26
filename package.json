@@ -1,6 +1,6 @@
 {
   "name": "slopguard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Catch hallucinated and typosquatted package names in AI-generated code before they reach your lockfile. CLI + GitHub Action for npm, PyPI and RubyGems.",
   "type": "module",
   "bin": {
